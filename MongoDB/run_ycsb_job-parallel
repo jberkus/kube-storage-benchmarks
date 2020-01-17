@@ -1,0 +1,112 @@
+#!/bin/bash
+
+readonly KUBE_CMD=kubectl
+readonly YCSB_JOB_TYPE=${1}
+readonly LOG_DIR=${2}
+readonly MONGO_POD_PREFIX=mongodb
+readonly NUMBER_OF_WORKERS=4
+readonly DB_PER_WORKER=8
+readonly HOST_FILE=/root/sagy/workers
+readonly MONGODB_USER=redhat
+readonly MONGODB_PASSWORD=redhat
+readonly MONGODB_DATABASE=ycsb
+readonly YCSB_THREADS=2
+readonly YCSB_WORKLOAD=workloadb
+readonly YCSB_RECORDCOUNT=8000000
+readonly YCSB_OPERATIONCOUNT=1000000
+readonly YCSB_DISTRIBUTION=uniform
+readonly YCSB_READ_PERC=0.75
+readonly YCSB_UPDATE_PERC=0.25
+readonly YCSB_INSERT_PERC=0.00
+declare -A jobs_pods
+
+function run_ycsb()
+{
+  job_name=$(cat <<EOF | ${KUBE_CMD} create -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: ycsb-${YCSB_JOB_TYPE}-
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - image: quay.io/sagyvolkov/ycsb-container:0.1
+          name: ycsb-${YCSB_JOB_TYPE}
+          resources:
+            limits:
+              memory: 1Gi
+          command:
+                - "bash"
+                - "-c"
+                - >
+                  ./bin/ycsb ${YCSB_JOB_TYPE} mongodb -s -threads ${YCSB_THREADS} \
+                  -P "workloads/${YCSB_WORKLOAD}" \
+                  -p mongodb.url=mongodb://${MONGODB_USER}:${MONGODB_PASSWORD}@${mongodb_ip}:27017/${MONGODB_DATABASE} \
+                  -p recordcount=${YCSB_RECORDCOUNT} \
+                  -p operationcount=${YCSB_OPERATIONCOUNT} \
+                  -p requestdistribution=${YCSB_DISTRIBUTION} \
+                  -p mongodb.writeConcern=acknowledged \
+                  -p wtimeout=10000 \
+                  -p core_workload_insertion_retry_limit=5 \
+                  -p core_workload_insertion_retry_interval=5 \
+                  -p maxexecutiontime=28800 \
+                  -p readproportion=${YCSB_READ_PERC} \
+                  -p updateproportion=${YCSB_UPDATE_PERC} \
+                  -p insertproportion=${YCSB_INSERT_PERC}
+EOF
+)
+job_name=$(echo ${job_name} | awk '{print $1}')
+ycsb_pod_name=$(${KUBE_CMD} describe ${job_name} | grep "Created pod:" | awk -F "Created pod: " '{print $2}')
+}
+
+if [[ $# -eq 0 || $# -ne 2 ]]; then
+ echo "Usage : $0 <ycsb job type: load or run> <directory to keep run logs>"
+ exit 1
+fi
+
+mapfile -t node_array < ${HOST_FILE}
+
+for ((j=1; j<=${DB_PER_WORKER}*${NUMBER_OF_WORKERS}; j++))
+do
+  echo "cordonning all nodes ..."
+  for node_name in ${node_array[@]}
+  do
+    ${KUBE_CMD} cordon ${node_name}
+  done
+
+  node_number=$((j%NUMBER_OF_WORKERS))
+  ${KUBE_CMD} uncordon ${node_array[${node_number}]}
+  deployment_name=${MONGO_POD_PREFIX}-${j}
+  mongodb_ip=$(${KUBE_CMD} get pod -l app=${deployment_name} -o jsonpath='{.items[].status.podIP}')
+  echo "Starting ycsb job for ${YCSB_JOB_TYPE} in deployment ${deployment_name} ..."
+  run_ycsb ${mongodb_ip}
+  jobs_pods[${job_name}]=${ycsb_pod_name}
+  echo "job ${job_name} is using ycsb pod ${ycsb_pod_name}"
+  ${KUBE_CMD} cordon ${node_array[${node_number}]}
+done
+
+for node in ${node_array[@]}
+do
+ ${KUBE_CMD} uncordon ${node}
+done
+
+if [[ "${YCSB_JOB_TYPE}" == "run" ]];then
+  if [[ ! -d "${LOG_DIR}" ]]; then
+    mkdir -p "$LOG_DIR"
+  fi
+  job_list=""
+  for i in "${!jobs_pods[@]}"
+  do
+    job_list="${job_list} ${i}"
+  done
+
+  echo "Waiting for jobs to complete ..."
+  ${KUBE_CMD} wait --for=condition=complete ${job_list} --timeout=1200s
+  echo "Getting logs from all jobs ..."
+  for i in "${!jobs_pods[@]}"
+  do
+    ${KUBE_CMD} logs ${jobs_pods[$i]} > ${LOG_DIR}/${jobs_pods[$i]}.log
+  done
+fi
