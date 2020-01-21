@@ -2,15 +2,12 @@
 
 readonly KUBE_CMD=kubectl
 readonly PVC_SIZE=10Gi
-readonly PGBENCH_USER_NAME=redhat
-readonly PGBENCH_PASSWORD=redhat
-readonly PGBENCH_PG_DB=userdb
 readonly WORKERS_LIST_FILE=/root/sagy/workers
 readonly MONGO_POD_PREFIX=mongodb
 readonly MONGO_PVC_PREFIX=mongodb-pvc
 readonly NUMBER_OF_WORKERS=4
 readonly DB_PER_WORKER=8
-readonly MONGO_POD_RAM=1Gi
+readonly MONGO_POD_RAM=2Gi
 readonly MONGO_POD_CPU=0.5
 
 function create_mongo_config_map()

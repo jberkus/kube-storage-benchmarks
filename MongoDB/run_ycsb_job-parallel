@@ -20,6 +20,11 @@ readonly YCSB_UPDATE_PERC=0.25
 readonly YCSB_INSERT_PERC=0.00
 declare -A jobs_pods
 
+if [[ $# -eq 0 || $# -ne 2 ]]; then
+ echo "Usage : $0 <ycsb job type: load or run> <directory to keep run logs>"
+ exit 1
+fi
+
 function run_ycsb()
 {
   job_name=$(cat <<EOF | ${KUBE_CMD} create -f -
@@ -51,7 +56,6 @@ spec:
                   -p wtimeout=10000 \
                   -p core_workload_insertion_retry_limit=5 \
                   -p core_workload_insertion_retry_interval=5 \
-                  -p maxexecutiontime=28800 \
                   -p readproportion=${YCSB_READ_PERC} \
                   -p updateproportion=${YCSB_UPDATE_PERC} \
                   -p insertproportion=${YCSB_INSERT_PERC}
@@ -60,11 +64,6 @@ EOF
 job_name=$(echo ${job_name} | awk '{print $1}')
 ycsb_pod_name=$(${KUBE_CMD} describe ${job_name} | grep "Created pod:" | awk -F "Created pod: " '{print $2}')
 }
-
-if [[ $# -eq 0 || $# -ne 2 ]]; then
- echo "Usage : $0 <ycsb job type: load or run> <directory to keep run logs>"
- exit 1
-fi
 
 mapfile -t node_array < ${HOST_FILE}
 
